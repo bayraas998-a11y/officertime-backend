@@ -1,5 +1,6 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
+const bcrypt = require('bcryptjs');
 require('dotenv').config();
 
 // SQLite database
@@ -47,6 +48,43 @@ const pool = {
     });
   }),
 };
+
+const dbGet = (sql, params = []) =>
+  new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => {
+      if (err) reject(err);
+      else resolve(row);
+    });
+  });
+
+const dbRun = (sql, params = []) =>
+  new Promise((resolve, reject) => {
+    db.run(sql, params, function (err) {
+      if (err) reject(err);
+      else resolve({ id: this.lastID, changes: this.changes });
+    });
+  });
+
+async function ensureBootstrapAdmin() {
+  const email = String(process.env.DEFAULT_ADMIN_EMAIL || '').trim();
+  const password = String(process.env.DEFAULT_ADMIN_PASSWORD || '').trim();
+  if (!email || !password) return;
+
+  const existing = await dbGet('SELECT id FROM employees WHERE email = ?', [email]);
+  if (existing?.id) {
+    console.log(`[bootstrap] admin exists: ${email}`);
+    return;
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  await dbRun(
+    `INSERT INTO employees
+      (first_name, last_name, email, password, position, department, hire_date, is_active, approval_status)
+     VALUES (?, ?, ?, ?, ?, ?, DATE('now'), 1, 'approved')`,
+    ['Admin', 'User', email, passwordHash, 'admin', 'IT']
+  );
+  console.log(`[bootstrap] admin created: ${email}`);
+}
 
 // Initialize database tables
 async function initializeDatabase() {
@@ -473,6 +511,13 @@ async function initializeDatabase() {
       }
     );
   });
+
+  // Optional bootstrap admin (controlled by env vars)
+  try {
+    await ensureBootstrapAdmin();
+  } catch (err) {
+    console.error('Error bootstrapping admin:', err);
+  }
 
   db.run(
     'ALTER TABLE tasks ADD COLUMN created_by_employee_id INTEGER',
